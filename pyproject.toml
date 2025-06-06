@@ -4,7 +4,14 @@ version = "0.1.0"
 authors = [{ name = "José Roberto Ferreira" }]
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["pyodbc>=5.2.0", "sqlalchemy>=2.0.41", "streamlit>=1.45.1"]
+dependencies = [
+    "pwdlib[argon2]>=0.2.1",
+    "pyodbc>=5.2.0",
+    "python-dateutil>=2.9.0.post0",
+    "python-decouple>=3.8",
+    "sqlalchemy>=2.0.41",
+    "streamlit>=1.45.1",
+]
 
 [dependency-groups]
 dev = ["sqlacodegen>=3.0.0"]
