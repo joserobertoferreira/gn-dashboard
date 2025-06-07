@@ -32,6 +32,15 @@ logout_page = st.Page('auth/logout.py', title='Logout', icon=':material/logout:'
 
 auth_pages = [reset_page, logout_page]
 
+# Reports pages
+annual_revenue_page = st.Page(
+    'reports/annual_revenue_per_customer.py',
+    title='Receita Anual por Cliente',
+    icon=':material/bar_chart:',
+)
+
+reports_pages = [annual_revenue_page]
+
 # Define navigation
 page_dict = {}
 
@@ -39,6 +48,8 @@ if st.session_state.authenticated:
     logger.info(f'User {st.session_state.user} is authenticated: {st.session_state.authenticated}')
 
     page_dict['Home'] = [home_page]
+    page_dict['Authentication'] = auth_pages
+    page_dict['Reports'] = reports_pages
 else:
     st.title('GN - Acesso ao Sistema')
 

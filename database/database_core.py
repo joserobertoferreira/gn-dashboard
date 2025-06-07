@@ -22,7 +22,7 @@ class DatabaseCoreManager:
         self.db_manager = db_manager
         self.schema = str(DATABASE.get('SCHEMA', ''))
 
-    def _build_sql_params_for_where(  # noqa: PLR6301
+    def _build_sql_params_for_where(  # noqa: PLR0912, PLR6301
         self,
         where_clauses: Optional[Mapping[str, Union[Tuple[str, Any], Condition]]],
         param_prefix: str = 'where',
@@ -56,7 +56,7 @@ class DatabaseCoreManager:
                     f'Invalid condition for column {column}. Expected Condition object or (operator, value) tuple.'
                 )
 
-            sanitized_column_for_param = ''.join(filter(str.isalnum, column))
+            sanitized_column_for_param = ''.join(filter(str.isalnum, column.replace('.', '_')))
             param_name = f'{param_prefix}_{sanitized_column_for_param}_{param_idx}'
             param_idx += 1
 
@@ -78,6 +78,18 @@ class DatabaseCoreManager:
                     sql_params[individual_param_name] = Conversions.convert_value(item_val)
 
                 where_parts.append(f'{column} {operator} ({", ".join(individual_placeholders)})')
+            elif operator == 'BETWEEN':
+                if not isinstance(value, (list, tuple)) or len(value) != Chapter1.YES:
+                    raise ValueError(
+                        f'Value for BETWEEN operator on column {column} must be a list or tuple of two items.'
+                    )
+
+                start_param_name = f'{param_name}_start'
+                end_param_name = f'{param_name}_end'
+                sql_params[start_param_name] = Conversions.convert_value(value[0])
+                sql_params[end_param_name] = Conversions.convert_value(value[1])
+
+                where_parts.append(f'{column} {operator} :{start_param_name} AND :{end_param_name}')
             elif operator in {'IS NULL', 'IS NOT NULL'}:
                 where_parts.append(f'{column} {operator}')
             else:
@@ -86,47 +98,99 @@ class DatabaseCoreManager:
 
         return ' AND '.join(where_parts), sql_params
 
-    def execute_query(self, **kwargs) -> dict[str, Any]:  # noqa: PLR0914
+    def execute_query(self, **kwargs) -> dict[str, Any]:  # noqa: PLR0912, PLR0914, PLR0915
         """
         Executa uma consulta SELECT pura.
 
         kwargs:
             table (str): Nome da tabela principal.
-            columns (List[str], optional): Lista de colunas a selecionar. Default '*'.
-            where_clauses (dict[str, Tuple[str, Any]], optional): Condições para o WHERE.
-                Ex: {"id": ("=", 1), "status": ("IN", ["A", "B"])}
-            options (dict[str, str], optional): Cláusulas adicionais como GROUP BY, ORDER BY.
-                Ex: {"group_by": "category", "order_by": "name DESC"}
-            limit (int, optional): Número máximo de registros (TOP para SQL Server).
-            joins (List[Tuple[str, str, str, str]], optional): Cláusulas JOIN.
-                Ex: [("INNER", "OtherTable", "main_table_fk_col", "other_table_pk_col")]
-                  (join_type, join_table, left_on_column_from_main_table, right_on_column_from_join_table)
+            table_alias (str, optional): Alias para a tabela principal.
+            columns (List[Union[str, Dict[str, str]]], optional): Lista de colunas/expressões a selecionar.
+                - str: "NomeTabelaOuAlias.NomeColuna"
+                - Dict: {"column": "NomeTabelaOuAlias.NomeColuna", "alias": "nome_resultado"}
+                - Dict: {"expression": "COUNT(*)", "alias": "total"}
+                Default '*'.
+            joins (List[Dict[str, str]], optional): Cláusulas JOIN.
+                Ex: [
+                    {
+                        "type": "INNER",
+                        "table": "OtherTable",
+                        "alias": "ot",
+                        "on": "MainTableAlias.fk_col = ot.pk_col"
+                    }
+                ]
+            where_clauses (Dict[str, Tuple[str, Any]], optional): Condições para o WHERE.
+                Ex: {"MainTableAlias.id": ("=", 1), "ot.status": ("IN", ["A", "B"])}
+            options (Dict[str, str], optional): Cláusulas adicionais como GROUP BY, ORDER BY.
+                Ex: {"group_by": "MainTableAlias.category", "order_by": "ot.name DESC"}
+            limit (int, optional): Número máximo de registros (TOP para SQL Server, LIMIT para outros).
+                                   (A lógica de dialeto para TOP/LIMIT não está totalmente implementada aqui)
         """
-        table: Optional[str] = kwargs.get('table')
-        if not table:
+        main_table: Optional[str] = kwargs.get('table')
+        if not main_table:
             return {'status': 'error', 'message': 'Table name is required.', 'data': None}
 
-        columns_list: Optional[list[str]] = kwargs.get('columns')
+        main_table_alias: Optional[str] = kwargs.get('table_alias')
+        columns_list: Optional[list[Union[str, dict[str, str]]]] = kwargs.get('columns')
+        joins: Optional[list[dict[str, str]]] = kwargs.get('joins')
         where_clauses_input: Optional[dict[str, Tuple[str, Any]]] = kwargs.get('where_clauses')
-        options: Optional[dict[str, str]] = kwargs.get('options')
+        options: Optional[dict[str, str]] = kwargs.get('options', {})
         limit: Optional[int] = kwargs.get('limit')
-        joins: Optional[list[Tuple[str, str, str, str]]] = kwargs.get('joins')
 
-        select_clause = ', '.join(columns_list) if columns_list else '*'
+        select_parts = []
+
+        if not columns_list:
+            select_parts.append('*')
+        else:
+            for col in columns_list:
+                if isinstance(col, str):
+                    # Coluna simples, pode ser um alias ou nome completo
+                    select_parts.append(col)
+                elif isinstance(col, dict):
+                    # Coluna com alias ou expressão
+                    if 'column' in col:
+                        select_parts.append(f'{col["column"]} AS {col["alias"]}')
+                    elif 'expression' in col and 'alias' in col:
+                        select_parts.append(f'{col["expression"]} AS {col["alias"]}')
+                    elif 'column' in col and 'alias' in col:
+                        select_parts.append(f'{col["column"]} AS {col["alias"]}')
+                    else:
+                        logger.warning(f'Item de coluna malformado ignorado: {col}')
+                else:
+                    logger.warning(f'Tipo de item de coluna inesperado ignorado: {col}')
+
+        select_clause = ', '.join(select_parts) if select_parts else '*'
 
         # TOP clause for SQL Server (adapt if using a different dialect)
         top_clause = f'TOP {int(limit)}' if limit and limit > 0 else ''
 
+        table = main_table_alias if main_table_alias else main_table
+
         from_clause = f'FROM {table}'
+
+        if main_table_alias:
+            from_clause += f' AS {main_table_alias}'
+
+        join_parts = []
         if joins:
-            join_parts = []
-            for join_type, join_table, left_col, right_col in joins:
-                # Assuming left_col is from the primary 'table' or a previously joined table.
-                # For simplicity here, assuming left_col is from the primary 'table'.
-                # More complex scenarios might require alias.
-                join_parts.append(
-                    f'{join_type.upper()} JOIN {join_table} ON {table}.{left_col} = {join_table}.{right_col}'
-                )
+            for join in joins:
+                join_type = join.get('type', 'INNER').upper()
+                join_table = join.get('table')
+                join_alias = join.get('alias')
+                on_condition = join.get('on')
+
+                if not join_table or not on_condition:
+                    logger.warning(f'Item de JOIN malformado ignorado (falta tabela ou condição ON): {join}')
+                    continue
+
+                join_clause_part = f'{join_type} JOIN {join_table}'
+                if join_alias:
+                    join_clause_part += f' AS {join_alias}'
+
+                join_clause_part += f' ON {on_condition}'
+                join_parts.append(join_clause_part)
+
+        if join_parts:
             from_clause += ' ' + ' '.join(join_parts)
 
         query_string = f'SELECT {top_clause} {select_clause} {from_clause}'
@@ -140,9 +204,9 @@ class DatabaseCoreManager:
                 final_sql_params.update(where_params)
 
         if options:
-            if 'group_by' in options:
+            if 'group_by' in options and options['group_by']:
                 query_string += f' GROUP BY {options["group_by"]}'
-            if 'order_by' in options:
+            if 'order_by' in options and options['order_by']:
                 query_string += f' ORDER BY {options["order_by"]}'
 
         logger.debug(f'Executing query: {query_string} with params: {final_sql_params}')
@@ -160,18 +224,9 @@ class DatabaseCoreManager:
                 # `mappings().all()` returns a list of RowMapping objects (dict-like)
                 fetched_data = [dict(row) for row in result.mappings().all()]
 
-                if not fetched_data:
-                    return {
-                        'status': 'success',
-                        'message': 'No results found',
-                        'columns': column_names,
-                        'records': 0,
-                        'data': [],
-                    }
-
                 return {
                     'status': 'success',
-                    'message': 'Query executed successfully',
+                    'message': 'Query executed successfully' if fetched_data else 'No results found',
                     'columns': column_names,
                     'records': len(fetched_data),
                     'data': fetched_data,

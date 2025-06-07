@@ -98,16 +98,12 @@ class UserRepository:
     def get_by_username_(self, username: str) -> dict[str, Any]:
         db_core = DatabaseCoreManager(db_manager=self.db)
 
-        print(db_core.schema)
-
         result = db_core.execute_query(
             table=f'{db_core.schema}.AUTILIS',
             columns=['ROWID', 'USR_0', 'NOMUSR_0', 'LOGIN_0', 'YPWDHASH_0'],
             where_clauses={'USR_0': ('=', username.upper())},
             limit=1,
         )
-
-        print(f'Query result: {result}')
 
         if result is None:
             logger.error('Erro ao consultar o banco de dados. Verifique os logs para mais detalhes.')

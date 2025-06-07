@@ -1,10 +1,12 @@
 {
   "cSpell.words": [
     "ACCCOD",
+    "ACCDAT",
     "ACSUSR",
     "ADDEML",
     "ADDNAM",
     "ALLACS",
+    "AMTATI",
     "ARCPRF",
     "ARVHOU",
     "ausday",
@@ -19,6 +21,7 @@
     "CODMET",
     "CODRIBDFT",
     "CODUSR",
+    "CRYDES",
     "DATCONN",
     "DECTIME",
     "DIFIMP",
@@ -30,6 +33,7 @@
     "FNCPAR",
     "FULTIM",
     "HDKREP",
+    "INVTYP",
     "KILRAT",
     "MSNEND",
     "MSNSTR",
@@ -39,6 +43,7 @@
     "NBRESC",
     "NEWPAS",
     "NOMUSR",
+    "ORIMOD",
     "PASSDAT",
     "PRFFCT",
     "PRFMEN",
@@ -46,7 +51,10 @@
     "PRTDEF",
     "PWDBI",
     "REPNUM",
+    "REVCANSTA",
     "RPCREP",
+    "SINVOICE",
+    "TABCOUNTRY",
     "TELEP",
     "TIMCONN",
     "USRBI",
@@ -55,6 +63,7 @@
     "USREXT",
     "USRPRT",
     "WITHOUTLDAP",
-    "YPWDHASH"
+    "YPWDHASH",
+    "ZTABCOUNTRY"
   ]
 }

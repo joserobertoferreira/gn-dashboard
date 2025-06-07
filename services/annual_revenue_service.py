@@ -1,4 +1,3 @@
-import datetime
 import logging
 from typing import Any
 
@@ -6,16 +5,19 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from database.manager import db
-from utils.comparison_table_data import equalize_rows
+from config.settings import DATABASE
+from database.database import db
+from database.database_core import DatabaseCoreManager
+from utils.local_menus import Chapter645
+
+# from utils.comparison_table_data import equalize_rows
 
 logger = logging.getLogger(__name__)
 
 
-class SalesBoardsService:
+class AnnualRevenueService:
     """
-    Service class for handling sales boards data.
-    This class is responsible for fetching and processing sales data from the database.
+    Service class for handling annual revenue data.
     """
 
     def __init__(self):
@@ -23,10 +25,15 @@ class SalesBoardsService:
 
     @staticmethod
     @st.cache_data(ttl=600)
-    def fetch_sales_data(schema: str, publication: str, year: int) -> pd.DataFrame:  # noqa: PLR6301
+    def fetch_revenue_data(start_year: int, end_year: int, invoice_type: int) -> pd.DataFrame:  # noqa: PLR6301
         """
-        Fetches sales data from the database for the specified publication and years.
-        This function MUST be adapted with the correct SQL query for your database.
+        Fetches annual revenue data from the database for the years interval and countries.
+        Args:
+            start_year (int): Start year for the data.
+            end_year (int): End year for the data.
+            invoice_type (int): Type of invoice to filter the data.
+        Returns:
+            pd.DataFrame: DataFrame containing the annual revenue data.
         """
 
         if not db:  # Verifica se db e seu engine foram inicializados
@@ -34,63 +41,58 @@ class SalesBoardsService:
             logger.error('Gerenciador do banco não disponível.')
             return pd.DataFrame()
 
-        end_date = datetime.date(year, 12, 31).strftime('%Y-%m-%d')
-        start_date = datetime.date(year - 1, 1, 1).strftime('%Y-%m-%d')
-        logger.info(
-            f'Buscar dados de vendas para Pub: {publication}, Ano Anterior: {start_date[:4]}, Ano Atual: {end_date[:4]}'
+        schema = DATABASE.get('SCHEMA', None)
+        if not schema:
+            st.error('Esquema do banco de dados não definido.')
+            logger.error('Esquema do banco de dados não definido.')
+            return pd.DataFrame()
+
+        if invoice_type not in Chapter645._value2member_map_:
+            logger.error(f'Tipo de fatura inválido: {invoice_type}.')
+            return pd.DataFrame()
+
+        logger.info(f'Buscar dados de vendas entre {start_year} e {end_year}')
+
+        db_core = DatabaseCoreManager(db_manager=db)
+
+        result = db_core.execute_query(
+            table=f'{schema}.SINVOICE',
+            columns=[
+                'YEAR(ACCDAT_0) AS Year',
+                'BPR_0 AS Customer',
+                'COUNT(1) AS Count',
+                'SUM(AMTATI_0 * SNS_0) AS Amount',
+            ],
+            where_clauses={
+                'INVTYP_0': ('=', invoice_type),
+                'REVCANSTA_0': ('=', 0),
+                'ORIMOD_0': ('=', 5),
+                'YEAR(ACCDAT_0)': ('BETWEEN', (start_year, end_year)),
+            },
+            options={
+                'group_by': 'YEAR(ACCDAT_0), BPR_0',
+                'order_by': 'YEAR(ACCDAT_0), BPR_0',
+            },
         )
 
-        query = f"""
-        SELECT
-            YEAR(a.DISDAT_0) as Year,
-            a.NUMEDI_0 as Issue,
-            a.DISDAT_0 as Date,
-            a.QTYRREC_0 as Supply,
-            ((a.QTYREXP_0+ISNULL(CONVERT(int,b.QTY_0),0))-a.QTYRDEV_0) as Sales,
-            0 as Unsolds,
-            ISNULL(CONVERT(int,c.OUT),0) as Outlet
-        FROM {schema}.ZITMINP a WITH (NOLOCK)
-        LEFT JOIN (SELECT x.ITMREF_0,SUM(CASE WHEN y.INVTYP_0=2 THEN x.QTY_0*-1 ELSE x.QTY_0 END) AS QTY_0
-                FROM {schema}.SINVOICED x WITH (NOLOCK)
-                INNER JOIN {schema}.SINVOICE y WITH (NOLOCK) ON y.NUM_0=x.NUM_0
-                WHERE x.CPY_0='INP'
-                AND x.BPCINV_0 NOT IN (SELECT VALEUR_0 FROM {schema}.ADOVAL WITH (NOLOCK) WHERE PARAM_0='BPCINV')
-                GROUP BY x.ITMREF_0) b ON b.ITMREF_0=a.ITMREF_0
-        LEFT JOIN (SELECT ITMREF_0,COUNT(1) AS OUT FROM {schema}.ZBPCEST GROUP BY ITMREF_0) c ON c.ITMREF_0=a.ITMREF_0
-        WHERE a.DISTVSP_0=2
-        AND a.PERNUM_0>1
-        AND a.CODPUB_0= ?
-        AND a.DISDAT_0 BETWEEN ? AND ?
-        ORDER BY a.DISDAT_0,a.NUMEDI_0
-        """
-        params = (
-            publication,
-            start_date,
-            end_date,
-        )
+        if result is None or result['records'] == 0:
+            logger.warning(
+                f'Nenhum dado encontrado para os parâmetros: '
+                f'Início: {start_year}, Fim: {end_year}, Tipo de Fatura: {invoice_type}'
+            )
+            return pd.DataFrame()
 
-        df = db.run_query(query, params)
+        data = result['data']
+        df = pd.DataFrame(data)
 
         if df.empty:
-            logger.warning(f'Nenhum dado retornado do banco para os parâmetros: {params}')
+            logger.warning(
+                f'Nenhum dado encontrado para os parâmetros: '
+                f'Início: {start_year}, Fim: {end_year}, Tipo de Fatura: {invoice_type}'
+            )
             return pd.DataFrame()
 
         logger.info(f'Dados brutos recebidos do banco ({len(df)} linhas). Colunas: {df.columns.tolist()}')
-
-        try:
-            # df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-            # df['Date'] = df['Date'].dt.strftime('%Y-%m-%d')
-
-            # Calculate Unsolds column
-            df['Unsolds'] = np.where(df['Supply'] > 0, ((df['Supply'] - df['Sales']) / df['Supply']), 0)
-
-        except Exception as e:
-            logger.error(f'Erro durante a conversão de tipos de dados: {e}', exc_info=True)
-            st.error(f'Erro ao processar os tipos de dados recebidos do banco: {e}')
-            return pd.DataFrame()
-
-        if df.empty:
-            logger.warning(f'Dados vazios após limpeza/conversão de tipos para os parâmetros: {params}')
 
         return df
 
