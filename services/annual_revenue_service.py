@@ -1,7 +1,5 @@
 import logging
-from typing import Any
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -60,8 +58,7 @@ class AnnualRevenueService:
             columns=[
                 'YEAR(ACCDAT_0) AS Year',
                 'BPR_0 AS Customer',
-                'COUNT(1) AS Count',
-                'SUM(AMTATI_0 * SNS_0) AS Amount',
+                'SUM(AMTATI_0) AS Amount',
             ],
             where_clauses={
                 'INVTYP_0': ('=', invoice_type),
@@ -96,184 +93,164 @@ class AnnualRevenueService:
 
         return df
 
-    def calculate_metrics(  # noqa: PLR0914, PLR6301
-        self,
-        df_prev: pd.DataFrame,
-        df_curr: pd.DataFrame,
-    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    @staticmethod
+    def split_revenue_by_year(
+        invoices: pd.DataFrame, credits: pd.DataFrame, start_year: int, end_year: int
+    ) -> tuple[dict[int, pd.DataFrame], dict[int, pd.DataFrame]]:
         """
-        Process the dataframe to calculate metrics for the specified year.
+        Split the revenue data into separate DataFrames for each year.
         Args:
-            df (pd.DataFrame): DataFrame containing sales data.
-            suffix (str): suffix.
+            invoices (pd.DataFrame): DataFrame containing invoice data.
+            credits (pd.DataFrame): DataFrame containing credit data.
+            start_year (int): Start year for the data.
+            end_year (int): End year for the data.
         Returns:
-            tuple: Four dictionaries with calculated metrics.
+            tuple: Two dictionaries with DataFrames for each year.
         """
+        df_invoices = {}
+        df_credits = {}
 
-        df = pd.merge(df_prev, df_curr, left_index=True, right_index=True, how='outer', suffixes=('_0', '_1'))
-
-        for suffix in range(2):
-            # Calculate totals
-            total_supply = df[f'Supply_{suffix}'].sum()
-            total_sales = df[f'Sales_{suffix}'].sum()
-            total_unsold_perc = np.nan
-
-            if total_supply > 0:
-                total_unsold_calc = (total_supply - total_sales) / total_supply
-                total_unsold_perc = total_unsold_calc if pd.notnull(total_unsold_calc) else np.nan
-
-            # Calculate averages
-            avg_supply = df[f'Supply_{suffix}'].mean()
-            avg_sales = df[f'Sales_{suffix}'].mean()
-            avg_outlet = df[f'Outlet_{suffix}'].mean()
-            avg_unsold_perc = np.nan
-
-            # Check if avg_supply is not NaN and greater than 0 before calculating
-            if pd.notnull(avg_supply) and avg_supply > 0:
-                # Also check if avg_sales is not NaN for the calculation
-                if pd.notnull(avg_sales):
-                    avg_unsold_calc = (avg_supply - avg_sales) / avg_supply
-                    avg_unsold_perc = avg_unsold_calc if pd.notnull(avg_unsold_calc) else np.nan
-
-            # Prepare the metrics dictionary
-            if suffix == 0:
-                totals_0 = {
-                    'Issue_0': ['Total'],
-                    'Date_0': [' '],
-                    'Supply_0': int(total_supply),
-                    'Sales_0': int(total_sales),
-                    'Unsolds_0': total_unsold_perc,
-                    'Outlet_0': 0,
-                }
-                averages_0 = {
-                    'Issue_0': ['Average'],
-                    'Date_0': [' '],
-                    'Supply_0': int(avg_supply),
-                    'Sales_0': int(avg_sales),
-                    'Unsolds_0': avg_unsold_perc,
-                    'Outlet_0': int(avg_outlet),
-                }
+        for year in range(start_year, end_year + 1):
+            if not invoices.empty:
+                df_invoices[year] = invoices[invoices['Year'] == year].copy().reset_index(drop=True)
             else:
-                totals_1 = {
-                    'Issue_1': ['Total'],
-                    'Date_1': [' '],
-                    'Supply_1': int(total_supply),
-                    'Sales_1': int(total_sales),
-                    'Unsolds_1': total_unsold_perc,
-                    'Outlet_1': 0,
-                }
-                averages_1 = {
-                    'Issue_1': ['Average'],
-                    'Date_1': [' '],
-                    'Supply_1': int(avg_supply),
-                    'Sales_1': int(avg_sales),
-                    'Unsolds_1': avg_unsold_perc,
-                    'Outlet_1': int(avg_outlet),
-                }
+                df_invoices[year] = pd.DataFrame()
 
-        # # Calculate average for variation columns
-        # avg_copies = df['Copies_var'].mean()
-        # avg_copies_perc = df['%_var'].mean()
+            if not credits.empty:
+                df_credits[year] = credits[credits['Year'] == year].copy().reset_index(drop=True)
+            else:
+                df_credits[year] = pd.DataFrame()
 
-        # copies = {
-        #     'Copies_var': int(avg_copies) if pd.notnull(avg_copies) else 0,
-        #     '%_var': avg_copies_perc if pd.notnull(avg_copies_perc) else 0.0,
-        # }
+        return df_invoices, df_credits
 
-        return totals_0, averages_0, totals_1, averages_1
-
-    def calculate_differences(self, df_diff: pd.DataFrame, current_year: int) -> pd.DataFrame:  # noqa: PLR6301
+    @staticmethod
+    def merge_and_equalize_by_year(  # noqa: PLR0912
+        df_invoices: dict[int, pd.DataFrame], df_credits: dict[int, pd.DataFrame]
+    ) -> dict[int, pd.DataFrame]:
         """
-        Calculate the differences between two DataFrames.
+        Merge invoices and credits DataFrames by year, aligning by Customer.
+        For each year, performs an outer merge on 'Customer', filling missing rows with NaN.
+        Ensures all yearly DataFrames have the same number of rows by padding with empty rows as needed.
+
         Args:
-            df_diff (pd.DataFrame): DataFrame
-            current_year (int): Current year for comparison.
+            df_invoices (dict[int, pd.DataFrame]): Dict of invoices DataFrames by year.
+            df_credits (dict[int, pd.DataFrame]): Dict of credits DataFrames by year.
+
         Returns:
-            pd.DataFrame: DataFrame with differences.
+            dict[int, pd.DataFrame]: Dict of merged and equalized DataFrames by year.
         """
+        merged_by_year = {}
+        all_customers_set = set()
 
-        # Calculate differences
-        prev_column = 'Sales_0'
-        curr_column = 'Sales_1'
+        # Collect all unique customers across all years
+        for year_key in set(df_invoices.keys()).union(df_credits.keys()):
+            inv_df = df_invoices.get(year_key, pd.DataFrame())
+            cred_df = df_credits.get(year_key, pd.DataFrame())
+            if not inv_df.empty and 'Customer' in inv_df.columns:
+                all_customers_set.update(inv_df['Customer'].unique())
+            if not cred_df.empty and 'Customer' in cred_df.columns:
+                all_customers_set.update(cred_df['Customer'].unique())
 
-        prev_year_col = (str(current_year - 1), prev_column)
-        curr_year_col = (str(current_year), curr_column)
-        copies_column = ('Variation', 'Copies_var')
-        percent_column = ('Variation', '%_var')
+        all_customers_list = sorted(list(all_customers_set))
+        max_rows = 0
 
-        sales_prev = pd.to_numeric(df_diff[prev_year_col], errors='coerce')
-        sales_curr = pd.to_numeric(df_diff[curr_year_col], errors='coerce')
+        expected_cols = ['Year', 'Customer', 'Amount']
 
-        copies_diff = sales_curr - sales_prev
+        # Merge and pad per year
+        for year_key in set(df_invoices.keys()).union(df_credits.keys()):
+            inv = df_invoices.get(year_key, pd.DataFrame())
+            cred = df_credits.get(year_key, pd.DataFrame())
 
-        df_diff[copies_column] = copies_diff.fillna(0).astype(int)
-        df_diff[percent_column] = 0.0
+            # Standardize DataFrames: ensure 'Customer' is the index and not a column.
+            if inv.empty:
+                # Create an empty DataFrame with expected columns and 'Customer' as index
+                inv = pd.DataFrame(columns=expected_cols).set_index('Customer')
+            else:
+                # Ensure 'Customer' is the index
+                # If 'Customer' is not in the columns, it will raise an error.
+                if 'Customer' not in inv.columns:
+                    raise ValueError(f"DataFrame de invoices para o ano {year_key} não possui coluna 'Customer'")
+                inv = inv.copy().set_index('Customer')
 
-        # Criar uma máscara para as condições de cálculo válidas:
-        valid_calculation_mask = sales_prev.notna() & sales_curr.notna() & (sales_prev != 0)
+            if cred.empty:
+                cred = pd.DataFrame(columns=expected_cols).set_index('Customer')
+            else:
+                if 'Customer' not in cred.columns:
+                    raise ValueError(f"DataFrame de créditos para o ano {year_key} não possui coluna 'Customer'")
+                cred = cred.copy().set_index('Customer')
 
-        # Calcular %_var apenas onde a máscara é True e atribuir à coluna de destino correta
-        df_diff.loc[valid_calculation_mask, percent_column] = (
-            copies_diff[valid_calculation_mask] / sales_prev[valid_calculation_mask]
-        )
+            merged = pd.merge(
+                inv, cred, how='outer', left_index=True, right_index=True, suffixes=('_invoice', '_credit')
+            )
 
-        # Lidar com inf/-inf e quaisquer NaNs restantes na coluna de destino
-        df_diff[percent_column] = df_diff[percent_column].replace([np.inf, -np.inf], 0.0).fillna(0.0)
-        return df_diff
+            merged = merged.reset_index()  # Agora 'Customer' (do índice) se torna uma coluna
 
-    def create_comparison_table(self, df_prev: pd.DataFrame, df_curr: pd.DataFrame, year_current: int) -> pd.DataFrame:  # noqa: PLR0914
-        """
-        Create a comparison table for the sales data.
-        Args:
-            df_data (pd.DataFrame): DataFrame containing sales data.
-            year_current (int): Current year for comparison.
-            Returns:
-                df: DataFrames for the previous year and current year.
-        """
+            # Ensure all customers are present
+            if 'Customer' not in merged.columns:
+                if 'index' in merged.columns and merged.index.name is None:  # Common if index was unnamed
+                    merged.rename(columns={'index': 'Customer'}, inplace=True)
+                else:
+                    raise ValueError(
+                        (
+                            f"Coluna 'Customer' não encontrada após reset_index para o ano {year_key}. "
+                            f'Index name era: {merged.index.name if hasattr(merged, "index") else "N/A"}'
+                        )
+                    )
 
-        df_prev, df_curr = equalize_rows(df1=df_prev, df2=df_curr)
+            merged = merged.set_index('Customer').reindex(all_customers_list).reset_index()
 
-        df_prev = df_prev.drop(columns=['Year'], errors='ignore')
-        new_columns = [f'{col}_0' for col in df_prev.columns]
-        df_prev.columns = new_columns
+            if 'Year_invoice' in merged.columns:
+                merged['Year_invoice'] = merged['Year_invoice'].fillna(year_key)
+            if 'Year_credit' in merged.columns:
+                merged['Year_credit'] = merged['Year_credit'].fillna(year_key)
 
-        df_curr = df_curr.drop(columns=['Year'], errors='ignore')
-        new_columns = [f'{col}_1' for col in df_curr.columns]
-        df_curr.columns = new_columns
+            merged_by_year[year_key] = merged
+            max_rows = max(max_rows, len(merged))
 
-        # Calculate metrics
-        prev_total, prev_average, curr_total, curr_average = self.calculate_metrics(df_prev, df_curr)
+        # Equalize all DataFrames to have the same number of rows
+        for year_k, df_item in merged_by_year.items():
+            if len(df_item) < max_rows:
+                pad_rows = max_rows - len(df_item)
+                empty_padding = pd.DataFrame({col: [pd.NA] * pad_rows for col in df_item.columns})
+                merged_by_year[year_k] = pd.concat([df_item, empty_padding], ignore_index=True)
 
-        # Adicionar linha de totais
-        totals = pd.DataFrame(prev_total).convert_dtypes()
-        averages = pd.DataFrame(prev_average).convert_dtypes()
+        return merged_by_year
 
-        _df = pd.concat([df_prev, totals, averages], ignore_index=True)
-        dic1 = _df.to_dict(orient='dict')
+    @staticmethod
+    def create_final_report(merged_by_year: dict[int, pd.DataFrame], customers: dict[str, str]) -> pd.DataFrame:
+        sorted_years = sorted(merged_by_year.keys())
+        first_year = sorted_years[0]
 
-        totals = pd.DataFrame(curr_total).convert_dtypes()
-        averages = pd.DataFrame(curr_average).convert_dtypes()
+        first_year_df = merged_by_year[first_year]
+        customer_info_df = first_year_df[['Customer']].copy()
+        customer_info_df['Name'] = customer_info_df['Customer'].map(customers)
 
-        _df = pd.concat([df_curr, totals, averages], ignore_index=True)
-        dic2 = _df.to_dict(orient='dict')
+        customer_info_df.columns = pd.MultiIndex.from_product([['Info'], customer_info_df.columns])
 
-        dic3 = {
-            'Copies_var': {i: 0 for i in range(len(dic2['Issue_1']))},
-            '%_var': {i: 0.0 for i in range(len(dic2['Issue_1']))},
-        }
+        value_dfs = []
+        for year in sorted_years:
+            df_original = merged_by_year.get(year, pd.DataFrame())
+            value_df = df_original[['Amount_invoice', 'Amount_credit']]
+            value_dfs.append(value_df)
 
-        data = {
-            **{(f'{year_current - 1}', f'{col}'): valores for col, valores in dic1.items()},
-            **{(f'{year_current}', f'{col}'): valores for col, valores in dic2.items()},
-            **{('Variation', f'{col}'): valores for col, valores in dic3.items()},
-        }
-        df = pd.DataFrame(data)
+            merged_by_year[year] = df_original
 
-        # Calculate differences
-        df_calculated = self.calculate_differences(df, current_year=year_current)
+        # Contact only values, create a MultiIndex with years
+        yearly_data_df = pd.concat(value_dfs, axis=1, keys=sorted_years)
 
-        df_calculated = df_calculated.fillna('')
+        # Calculate Balance for each year
+        for year in sorted_years:
+            invoice = yearly_data_df[(year, 'Amount_invoice')].fillna(0)
+            credit = yearly_data_df[(year, 'Amount_credit')].fillna(0)
 
-        #        df_calculated.columns = pd.MultiIndex.from_tuples(list(data.keys()), names=['Year', 'Metrics', 'Variation'])
+            yearly_data_df[(year, 'Balance')] = invoice - credit
 
-        return df_calculated
+        columns_order = ['Amount_invoice', 'Amount_credit', 'Balance']
+
+        ordered_columns = [(year, column) for year in sorted_years for column in columns_order]
+
+        yearly_data_df = yearly_data_df[ordered_columns]
+
+        final_df = pd.concat([customer_info_df, yearly_data_df], axis=1)
+
+        return final_df
