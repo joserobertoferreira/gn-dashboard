@@ -2,7 +2,7 @@
 # Edit at https://www.toptal.com/developers/gitignore?templates=python
 
 # Arquivos de Configuração Local/Segredos
-.streamlit/
+.streamlit/secrets.toml
 
 ### Python ###
 # Byte-compiled / optimized / DLL files
