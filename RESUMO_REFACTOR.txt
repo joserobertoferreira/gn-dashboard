@@ -1,0 +1,107 @@
+GN DASHBOARD - RESUMO DA REESTRUTURAÇÃO (v0.1 -> v0.2)
+Data: 2026-10-31
+Branch: refactor/structure (commit fd37acd). Nada foi enviado para o remoto.
+
+======================================================================
+1. VERSÃO ANTERIOR PRESERVADA
+======================================================================
+Não foi possível renomear a pasta: o Windows bloqueou-a porque a sessão
+estava a correr dentro dela. Em alternativa:
+
+- Copiei tudo, incluindo o histórico git, para:
+      D:\Python\Sage\GN\dashboard_old
+- Refiz a pasta "dashboard" no mesmo sítio.
+- Ficou de fora da cópia só o .venv, que tem caminhos absolutos. Se precisar
+  de correr a versão antiga, basta um "uv sync" dentro de dashboard_old.
+
+======================================================================
+2. O QUE MUDOU
+======================================================================
+Estrutura
+- main.py e home.py saíram da raiz.
+- Todo o código está agora em src/gn_dashboard/, dividido em:
+      core/          configuração (secrets, caminhos), logging, enums Sage X3
+      database/      engine/sessões, QueryBuilder, URL de ligação
+      models/        ORM SQLAlchemy (AUTILIS, TABCOUNTRY, mixins)
+      repositories/  acesso a dados
+      services/      regras de negócio
+      ui/            proteção das páginas (guards), configuração de tabelas
+      utils/         conversões, utilitários pandas
+      views/         páginas Streamlit (home, auth, reports)
+- As imagens passaram para assets/images/.
+- Os ficheiros foram movidos com "git mv", por isso o histórico de cada um
+  continua acessível (git log --follow).
+
+Arranque
+- Passa a ser:   uv run streamlit run src/gn_dashboard/app.py
+            ou   uv run gn-dashboard
+- O antigo "streamlit run main.py" já não funciona.
+
+Bugs corrigidos (a lista completa está em docs/migracao.md)
+- services/user_service.py importava módulos inexistentes; foi reescrito.
+- logout/reset redirecionavam para pages/login.py, que não existe.
+- Com alias, o QueryBuilder gerava "FROM alias AS alias".
+- O schema 'TGN' estava fixo no modelo Countries.
+- O order_by dos repositórios era ignorado.
+- O DEBUG estava invertido.
+- A ligação à BD era criada no import do módulo; passou a ser criada só
+  quando é precisa.
+- O logging era reconfigurado em cada rerun do Streamlit.
+- Os caminhos de imagens e logs eram relativos ao diretório atual.
+- A opção trusted_connection era ignorada.
+
+Página "Reset Password"
+- Estava vazia; agora chama-se "Alterar Password" e tem um formulário que
+  funciona.
+
+Documentação (MkDocs + mkdocs-material + mkdocstrings, em PT-PT)
+- Guia de instalação e configuração.
+- Arquitetura, com diagramas.
+- Como acrescentar um relatório.
+- Referência da API, gerada a partir das docstrings.
+- Notas de migração.
+- Para ver:  uv run mkdocs serve
+
+Dependências
+- requirements.txt (com versões fixas e "-e .") e requirements-docs.txt,
+  ambos gerados a partir do uv.lock.
+- No pyproject.toml foram criados os grupos "dev" e "docs".
+
+Testes
+- 29 testes pytest, que não precisam da base de dados.
+
+======================================================================
+3. VERIFICAÇÃO
+======================================================================
+- Os 29 testes passam e o ruff não acusa nada.
+- O "mkdocs build --strict" termina sem avisos.
+- Todas as páginas abrem sem erros num teste sem browser (AppTest), com e
+  sem sessão iniciada.
+- NÃO testado com a base de dados: o login, a gravação de password e o botão
+  "Gerar Relatório" têm de ser testados manualmente.
+
+======================================================================
+4. O QUE TEM DE SABER OU FAZER
+======================================================================
+1) O secrets.toml não foi lido nem alterado. Continua a funcionar como está.
+
+2) O registo das queries SQL no log fica desligado. Com a chave atual
+   "[debug] production = true" (presumivelmente a que está em uso), a v0.1
+   tinha-o ligado por causa do erro do DEBUG invertido. Para o ligar,
+   acrescente ao secrets.toml:
+       [app]
+       debug = true
+
+3) Mudanças visíveis na tabela de receita: as colunas chamam-se agora
+   "Faturas", "Notas de crédito" e "Saldo" (antes "Total", "Total", "Saldo")
+   e mostram 2 casas decimais. Há também alguns textos da interface revistos
+   para PT-PT.
+
+4) Primeiro login: um utilizador do Sage sem password guardada fica com a
+   password de quem fizer o primeiro login com esse código. Já era assim na
+   v0.1; não foi alterado, mas o aviso está em
+   docs/arquitetura/autenticacao.md.
+
+5) Para integrar, se estiver tudo bem com a base de dados real:
+       git checkout main
+       git merge refactor/structure
